@@ -1,6 +1,13 @@
 /**
  * Main Popup Controller class that orchestrates all popup functionality
  */
+import PopupState from './PopupState.js';
+import UIManager from './UIManager.js';
+import MessageHandler from './MessageHandler.js';
+import MasterVolumeManager from './MasterVolumeManager.js';
+import TabListManager from './TabListManager.js';
+import { CONFIG } from '../config.js';
+
 class PopupController {
   constructor() {
     this.state = new PopupState();
@@ -139,3 +146,5 @@ class PopupController {
     }
   }
 }
+
+export default PopupController;

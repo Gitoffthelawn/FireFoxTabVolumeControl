@@ -1,6 +1,8 @@
 /**
  * Tab List Manager class for individual tab management
  */
+import { CONFIG } from '../config.js';
+
 class TabListManager {
   constructor(state, uiManager, messageHandler) {
     this.state = state;
@@ -172,3 +174,5 @@ class TabListManager {
     await Promise.all(volumePromises);
   }
 }
+
+export default TabListManager;

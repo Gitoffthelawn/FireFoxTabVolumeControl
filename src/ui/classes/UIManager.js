@@ -1,6 +1,8 @@
 /**
  * UI Manager class for DOM element management
  */
+import { CONFIG } from '../config.js';
+
 class UIManager {
   constructor() {
     this.elements = {};
@@ -67,12 +69,11 @@ class UIManager {
    * Initialize theme manager
    */
   async initializeTheme() {
-    if (window.themeManager) {
-      try {
-        await window.themeManager.init();
-      } catch (error) {
-        console.warn('Theme manager initialization failed:', error);
-      }
+    try {
+      const { default: themeManager } = await import('../themeManager.js');
+      await themeManager.init();
+    } catch (error) {
+      console.warn('Theme manager initialization failed:', error);
     }
   }
 
@@ -114,3 +115,5 @@ class UIManager {
     return CONFIG.CLASSES.VOLUME_NORMAL;
   }
 }
+
+export default UIManager;

@@ -1,6 +1,8 @@
 /**
  * Enhanced state management class for popup data with validation and events
  */
+import { CONFIG } from '../config.js';
+
 class PopupState {
   constructor() {
     this.audioTabs = [];
@@ -343,3 +345,5 @@ class PopupState {
     };
   }
 }
+
+export default PopupState;

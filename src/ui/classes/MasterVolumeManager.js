@@ -1,6 +1,8 @@
 /**
  * Master Volume Manager class for master volume controls
  */
+import { CONFIG } from '../config.js';
+
 class MasterVolumeManager {
   constructor(state, uiManager, messageHandler) {
     this.state = state;
@@ -111,3 +113,5 @@ class MasterVolumeManager {
     }
   }
 }
+
+export default MasterVolumeManager;

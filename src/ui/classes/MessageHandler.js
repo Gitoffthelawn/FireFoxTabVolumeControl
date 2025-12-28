@@ -61,3 +61,5 @@ class MessageHandler {
     return browser.runtime.sendMessage({ action: 'resetAllTabs' });
   }
 }
+
+export default MessageHandler;

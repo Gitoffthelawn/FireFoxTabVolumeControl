@@ -297,12 +297,4 @@ class ThemeManager {
 // Create and export a singleton instance
 const themeManager = new ThemeManager();
 
-// For use in popup context
-if (typeof window !== 'undefined') {
-  window.themeManager = themeManager;
-}
-
-// For module usage (if needed in the future)
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = themeManager;
-}
+export default themeManager;
