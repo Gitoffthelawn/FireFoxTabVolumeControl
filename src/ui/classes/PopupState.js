@@ -223,6 +223,22 @@ class PopupState {
   }
 
   /**
+   * Update the "remembered" flag on a tab in local state without touching
+   * volume. Used after toggling the per-site remember checkbox so the UI
+   * reflects the new state without a full reload.
+   * @param {number} tabId
+   * @param {boolean} remembered
+   */
+  updateTabRemembered(tabId, remembered) {
+    if (!this._validateTabId(tabId)) return;
+
+    const tabIndex = this.audioTabs.findIndex(tab => tab.id === tabId);
+    if (tabIndex === -1) return;
+
+    this.audioTabs[tabIndex] = { ...this.audioTabs[tabIndex], remembered: !!remembered };
+  }
+
+  /**
    * Get master volume
    * @returns {number} Current master volume
    */

@@ -44,15 +44,6 @@ class MediaScanner {
     
     // Scan shadow DOM elements
     this.scanShadowDOMElements();
-    
-    // Call site-specific detection if available
-    if (typeof window.detectSiteAudio === 'function') {
-      try { 
-        window.detectSiteAudio(); 
-      } catch (e) {
-        console.warn('Error in site-specific detection:', e);
-      }
-    }
   }
 
   /**

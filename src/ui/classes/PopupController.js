@@ -107,42 +107,34 @@ class PopupController {
   }
 
   /**
-   * Load audio tabs from background script
+   * Load audio tabs from background script.
+   * @param {Object} [options]
+   * @param {boolean} [options.silent] - Skip the "Loading..." placeholder.
+   *   Used for live refreshes triggered by background notifications, so the
+   *   list doesn't flicker mid-interaction (slider drag, checkbox toggle).
    */
-  async loadAudioTabs() {
+  async loadAudioTabs({ silent = false } = {}) {
     try {
-      // If we just applied master volume, don't reload to prevent UI flicker
       if (this.state.wasJustApplied()) {
         return;
       }
-      
-      this.uiManager.showLoadingMessage();
-      
+
+      if (!silent) {
+        this.uiManager.showLoadingMessage();
+      }
+
       const response = await this.messageHandler.getTabAudioStatus();
-      
+
       if (response?.tabs) {
-        // Validate and set audio tabs with enhanced error handling
         this.state.setAudioTabs(response.tabs);
-        
-        // Query each tab for its actual current volume to ensure accuracy
         await this.tabListManager.syncTabVolumes();
-        
-        // Render the tab list
         this.tabListManager.render();
-      } else {
+      } else if (!silent) {
         this.uiManager.showNoAudioMessage();
       }
     } catch (error) {
       console.error('Failed to load audio tabs:', error);
-      this.uiManager.showNoAudioMessage();
-      
-      // Validate current state integrity
-      const validation = this.state.validateState();
-      if (!validation.isValid) {
-        console.warn('State validation failed:', validation.errors);
-        // Could reset state here if critically corrupted
-        // this.state.reset();
-      }
+      if (!silent) this.uiManager.showNoAudioMessage();
     }
   }
 }

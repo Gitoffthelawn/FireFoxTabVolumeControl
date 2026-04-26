@@ -103,11 +103,6 @@ class MasterVolumeManager {
     try {
       await this.messageHandler.resetAllTabs();
       this.setVolume(CONFIG.VOLUMES.DEFAULT);
-      
-      // Reload tabs after a delay
-      setTimeout(() => {
-        // This will be called from PopupController
-      }, CONFIG.TIMING.REFRESH_DELAY);
     } catch (error) {
       console.error('Failed to reset all tabs:', error);
     }

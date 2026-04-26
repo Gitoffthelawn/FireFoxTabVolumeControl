@@ -79,3 +79,8 @@ body.dark-theme .tab-item {
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
 }
+
+body.dark-theme .tab-item-active {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary) inset;
+}

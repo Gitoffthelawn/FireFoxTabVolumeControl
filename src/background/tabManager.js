@@ -1,457 +1,411 @@
 /**
  * Firefox Tab Volume Control - Tab Manager
- * Handles tab state management, audio detection, and tab lifecycle events
+ *
+ * Owns per-tab and per-site volume state.
+ *
+ * Persistence:
+ *   - storage.session: per-tab volume + hostname. Survives background script
+ *     suspension within a session; cleared on browser restart, which matches
+ *     the lifetime of tab IDs.
+ *   - storage.local:   per-hostname "remembered" volume. Survives restarts.
  */
 
 class TabManager {
   constructor() {
-    // State management
-    this.tabVolumes = new Map();
-    this.audioTabs = new Set();
-    this.tabHostnames = new Map();
+    this.tabVolumes = new Map();      // tabId -> volume
+    this.audioTabs = new Set();        // tabIds that are/were audible
+    this.tabHostnames = new Map();     // tabId -> hostname
     this.tabRemovalTimeouts = new Map();
-    
-    // Constants
+    this.sitePrefs = {};               // hostname -> volume
+
     this.DEFAULT_VOLUME = 100;
-    this.REMOVAL_DELAY = 3000; // 3 seconds delay before removing tabs that stop being audible
-    
-    // Bind methods to preserve context
+    this.REMOVAL_DELAY = 3000;
+    this.PERSIST_DEBOUNCE = 250;
+
+    this._persistTabsTimer = null;
+    this._persistSitePrefsTimer = null;
+
     this.handleTabUpdated = this.handleTabUpdated.bind(this);
     this.handleTabRemoved = this.handleTabRemoved.bind(this);
     this.handleTabActivated = this.handleTabActivated.bind(this);
-    this.cleanupAudioTabs = this.cleanupAudioTabs.bind(this);
-    
-    // Set up event listeners
-    this.setupEventListeners();
-    
-    // Start cleanup interval
-    setInterval(this.cleanupAudioTabs, 60000); // Cleanup every 60 seconds
+
+    this.ready = this._loadFromStorage()
+      .then(() => this._pruneStaleEntries())
+      .then(() => this._applyRememberedToOpenTabs());
+    this._setupEventListeners();
   }
-  
+
   /**
-   * Set up browser event listeners
+   * On startup, walk every open tab and apply any matching site preference.
+   * Covers the case where the browser restored tabs from cache without
+   * firing tabs.onUpdated, so handleUrlChange never ran for them.
+   * Tabs that already have a stored volume from this session are left alone.
    */
-  setupEventListeners() {
+  async _applyRememberedToOpenTabs() {
+    try {
+      const tabs = await browser.tabs.query({});
+      for (const tab of tabs) {
+        if (!tab.url) continue;
+        const hostname = this._hostnameOf(tab.url);
+        if (!hostname) continue;
+
+        if (!this.tabHostnames.has(tab.id)) {
+          this.tabHostnames.set(tab.id, hostname);
+        }
+
+        if (hostname in this.sitePrefs && !this.tabVolumes.has(tab.id)) {
+          this._applyVolume(tab.id, this.sitePrefs[hostname]);
+        }
+      }
+    } catch (error) {
+      console.warn('Tab Volume Control: failed to apply remembered sites on startup', error);
+    }
+  }
+
+  /**
+   * Drop persisted tab entries whose tabs are no longer open. Runs once at
+   * startup so the background script reloading after suspension doesn't carry
+   * forward dead tab IDs.
+   */
+  async _pruneStaleEntries() {
+    try {
+      const tabs = await browser.tabs.query({});
+      const liveIds = new Set(tabs.map(t => t.id));
+      let changed = false;
+
+      for (const tabId of [...this.tabVolumes.keys()]) {
+        if (!liveIds.has(tabId)) { this.tabVolumes.delete(tabId); changed = true; }
+      }
+      for (const tabId of [...this.tabHostnames.keys()]) {
+        if (!liveIds.has(tabId)) { this.tabHostnames.delete(tabId); changed = true; }
+      }
+      for (const tabId of [...this.audioTabs]) {
+        if (!liveIds.has(tabId)) { this.audioTabs.delete(tabId); changed = true; }
+      }
+
+      if (changed) this._schedulePersistTabs();
+    } catch (error) {
+      console.warn('Tab Volume Control: prune failed', error);
+    }
+  }
+
+  async _loadFromStorage() {
+    try {
+      const session = await browser.storage.session.get(['tabVolumes', 'tabHostnames']);
+      if (session.tabVolumes) {
+        this.tabVolumes = new Map(
+          Object.entries(session.tabVolumes).map(([k, v]) => [parseInt(k, 10), v])
+        );
+      }
+      if (session.tabHostnames) {
+        this.tabHostnames = new Map(
+          Object.entries(session.tabHostnames).map(([k, v]) => [parseInt(k, 10), v])
+        );
+      }
+      const local = await browser.storage.local.get('sitePrefs');
+      this.sitePrefs = local.sitePrefs || {};
+    } catch (error) {
+      console.warn('Tab Volume Control: failed to load persisted state', error);
+    }
+  }
+
+  _schedulePersistTabs() {
+    clearTimeout(this._persistTabsTimer);
+    this._persistTabsTimer = setTimeout(() => this._persistTabs(), this.PERSIST_DEBOUNCE);
+  }
+
+  async _persistTabs() {
+    try {
+      await browser.storage.session.set({
+        tabVolumes: Object.fromEntries(this.tabVolumes),
+        tabHostnames: Object.fromEntries(this.tabHostnames)
+      });
+    } catch (error) {
+      console.warn('Tab Volume Control: failed to persist tab state', error);
+    }
+  }
+
+  _schedulePersistSitePrefs() {
+    clearTimeout(this._persistSitePrefsTimer);
+    this._persistSitePrefsTimer = setTimeout(() => this._persistSitePrefs(), this.PERSIST_DEBOUNCE);
+  }
+
+  async _persistSitePrefs() {
+    try {
+      await browser.storage.local.set({ sitePrefs: this.sitePrefs });
+    } catch (error) {
+      console.warn('Tab Volume Control: failed to persist site prefs', error);
+    }
+  }
+
+  _setupEventListeners() {
     browser.tabs.onUpdated.addListener(this.handleTabUpdated);
     browser.tabs.onRemoved.addListener(this.handleTabRemoved);
     browser.tabs.onActivated.addListener(this.handleTabActivated);
   }
-  
+
   /**
-   * Get tab volume
-   * @param {number} tabId - Tab ID
-   * @returns {number} Volume level
+   * Extract a normalized "site" key from a URL. Strips common generic
+   * subdomain prefixes (www, m, mobile) so e.g. youtube.com,
+   * www.youtube.com, and m.youtube.com all share one preference.
+   * Does not attempt eTLD+1 collapsing — that would require the Public
+   * Suffix List to handle ccTLDs like bbc.co.uk correctly.
    */
+  _hostnameOf(url) {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      return hostname.replace(/^(?:www|m|mobile)\./, '');
+    } catch {
+      return null;
+    }
+  }
+
+  async _ensureHostname(tabId) {
+    if (this.tabHostnames.has(tabId)) return this.tabHostnames.get(tabId);
+    try {
+      const tab = await browser.tabs.get(tabId);
+      const hostname = tab?.url ? this._hostnameOf(tab.url) : null;
+      if (hostname) {
+        this.tabHostnames.set(tabId, hostname);
+        this._schedulePersistTabs();
+      }
+      return hostname;
+    } catch {
+      return null;
+    }
+  }
+
   getTabVolume(tabId) {
-    if (tabId === undefined || tabId === null) {
-      return this.DEFAULT_VOLUME;
-    }
-    return this.tabVolumes.get(tabId) || this.DEFAULT_VOLUME;
+    if (tabId === undefined || tabId === null) return this.DEFAULT_VOLUME;
+    return this.tabVolumes.get(tabId) ?? this.DEFAULT_VOLUME;
   }
-  
+
   /**
-   * Set tab volume
-   * @param {number} tabId - Tab ID
-   * @param {number} volume - Volume level
+   * Apply a volume internally without touching site prefs. Used both for the
+   * external setTabVolume API and for auto-applying remembered volumes on
+   * navigation.
    */
-  setTabVolume(tabId, volume) {
+  _applyVolume(tabId, volume) {
     this.tabVolumes.set(tabId, volume);
-    
-    // Initialize hostname tracking if needed
-    if (!this.tabHostnames.has(tabId)) {
-      browser.tabs.get(tabId).then(tab => {
-        if (tab?.url) {
-          try {
-            const url = new URL(tab.url);
-            this.tabHostnames.set(tabId, url.hostname.toLowerCase());
-          } catch (e) {
-            this.tabHostnames.set(tabId, 'unknown');
-          }
-        }
-      }).catch(() => {});
-    }
-    
-    // Send message to content script
     browser.tabs.sendMessage(tabId, { action: 'setVolume', volume }).catch(() => {});
+    this._schedulePersistTabs();
   }
-  
-  /**
-   * Get audio tab status for popup
-   * @returns {Promise<Array>} Array of audio tab info
-   */
+
+  async setTabVolume(tabId, volume) {
+    await this.ready;
+    this._applyVolume(tabId, volume);
+
+    const hostname = await this._ensureHostname(tabId);
+    if (hostname && hostname in this.sitePrefs && this.sitePrefs[hostname] !== volume) {
+      // Slider moved on a remembered site → update the saved value.
+      this.sitePrefs[hostname] = volume;
+      this._schedulePersistSitePrefs();
+    }
+  }
+
   async getAudioTabStatus() {
-    const tabs = await browser.tabs.query({});
-    const audioTabsInfo = tabs
-      .filter(tab => this.audioTabs.has(tab.id) || tab.audible)
-      .map(tab => ({
-        id: tab.id,
-        title: tab.title,
-        volume: this.getTabVolume(tab.id),
-        favIconUrl: tab.favIconUrl,
-        audible: tab.audible || false
-      }));
-    return audioTabsInfo;
-  }
-  
-  /**
-   * Apply volume to all audio tabs
-   * @param {number} volume - Volume to apply
-   */
-  async applyToAllTabs(volume) {
-    const tabs = await browser.tabs.query({});
-    tabs
-      .filter(tab => this.audioTabs.has(tab.id) || tab.audible)
-      .forEach(tab => {
-        this.setTabVolume(tab.id, volume);
+    await this.ready;
+
+    const [tabs, activeTabs] = await Promise.all([
+      browser.tabs.query({}),
+      browser.tabs.query({ active: true, currentWindow: true })
+    ]);
+    const activeTabId = activeTabs[0]?.id;
+
+    const result = tabs
+      .filter(tab => this.audioTabs.has(tab.id) || tab.audible || tab.id === activeTabId)
+      .map(tab => {
+        const hostname = this.tabHostnames.get(tab.id) || (tab.url ? this._hostnameOf(tab.url) : null);
+        return {
+          id: tab.id,
+          title: tab.title,
+          volume: this.getTabVolume(tab.id),
+          favIconUrl: tab.favIconUrl,
+          audible: tab.audible || false,
+          active: tab.id === activeTabId,
+          hostname,
+          remembered: hostname ? hostname in this.sitePrefs : false
+        };
       });
+
+    // Pin the active tab to the top so users can pre-set volume.
+    result.sort((a, b) => Number(b.active) - Number(a.active));
+    return result;
   }
-  
-  /**
-   * Reset all tabs to default volume
-   */
+
+  async applyToAllTabs(volume) {
+    await this.ready;
+    const tabs = await browser.tabs.query({});
+    await Promise.all(
+      tabs
+        .filter(tab => this.audioTabs.has(tab.id) || tab.audible)
+        .map(tab => this.setTabVolume(tab.id, volume))
+    );
+  }
+
   async resetAllTabs() {
     await this.applyToAllTabs(this.DEFAULT_VOLUME);
   }
-  
-  /**
-   * Notify popup about audio status changes
-   */
+
+  async setSitePreference(tabId) {
+    await this.ready;
+    const hostname = await this._ensureHostname(tabId);
+    if (!hostname) return false;
+    this.sitePrefs[hostname] = this.getTabVolume(tabId);
+    this._schedulePersistSitePrefs();
+    this.notifyPopupUpdate();
+    return true;
+  }
+
+  async removeSitePreference(tabId) {
+    await this.ready;
+    const hostname = await this._ensureHostname(tabId);
+    if (!hostname || !(hostname in this.sitePrefs)) return false;
+    delete this.sitePrefs[hostname];
+    this._schedulePersistSitePrefs();
+    this.notifyPopupUpdate();
+    return true;
+  }
+
   notifyPopupUpdate() {
-    browser.runtime.sendMessage({ action: 'audioStatusChanged' }).catch(() => {
-      // Popup might not be open, that's fine
-    });
+    browser.runtime.sendMessage({ action: 'audioStatusChanged' }).catch(() => {});
   }
-  
-  /**
-   * Cleanup invalid audio tabs
-   */
-  async cleanupAudioTabs() {
-    const tabsToRemove = [];
-    
-    for (const tabId of this.audioTabs) {
-      try {
-        await browser.tabs.get(tabId);
-      } catch (error) {
-        tabsToRemove.push(tabId);
-      }
-    }
-    
-    // Remove invalid tabs
-    if (tabsToRemove.length > 0) {
-      tabsToRemove.forEach(tabId => {
-        this.audioTabs.delete(tabId);
-        this.tabVolumes.delete(tabId);
-        this.tabHostnames.delete(tabId);
-        clearTimeout(this.tabRemovalTimeouts.get(tabId));
-        this.tabRemovalTimeouts.delete(tabId);
-      });
-      this.notifyPopupUpdate();
-    }
-  }
-  
-  /**
-   * Handle tab updates (audio state, URL changes)
-   */
+
   handleTabUpdated(tabId, changeInfo) {
     if (changeInfo.audible !== undefined) {
       if (changeInfo.audible) {
-        // Tab started playing audio
-        this.audioTabs.add(tabId);
-        
-        // Initialize hostname tracking
-        if (!this.tabHostnames.has(tabId)) {
-          browser.tabs.get(tabId).then(tab => {
-            if (tab?.url) {
-              try {
-                const url = new URL(tab.url);
-                this.tabHostnames.set(tabId, url.hostname.toLowerCase());
-              } catch (e) {
-                this.tabHostnames.set(tabId, 'unknown');
-              }
-            }
-          }).catch(() => {});
-        }
-        
-        // Cancel any pending removal
-        if (this.tabRemovalTimeouts.has(tabId)) {
-          clearTimeout(this.tabRemovalTimeouts.get(tabId));
-          this.tabRemovalTimeouts.delete(tabId);
-        }
-        
-        this.notifyPopupUpdate();
+        this._handleAudibleStarted(tabId);
       } else {
-        // Tab stopped playing audio - check if it's the active tab before scheduling removal
         this.handleAudioStopped(tabId);
       }
     }
-    
-    // Handle URL changes and reset volume when changing sites
+
     if (changeInfo.url) {
       this.handleUrlChange(tabId, changeInfo.url);
     }
   }
-  
+
   /**
-   * Handle when audio stops for a tab
-   * @param {number} tabId - Tab ID
+   * Tab just started making sound. By now the content script is guaranteed
+   * to be loaded (audio doesn't play before scripts run). This is our reliable
+   * sync point: ensure the content script is using the correct volume,
+   * including auto-adopting a remembered site preference if we haven't yet.
    */
-  async handleAudioStopped(tabId) {
-    if (!this.audioTabs.has(tabId)) return;
-    
-    try {
-      const activeTabs = await browser.tabs.query({ active: true, currentWindow: true });
-      const isActiveTab = activeTabs.length > 0 && activeTabs[0].id === tabId;
-      
-      if (!isActiveTab) {
-        // Only schedule removal for non-active tabs
-        // Double-check that there isn't already a timeout set
-        if (!this.tabRemovalTimeouts.has(tabId)) {
-          const timeoutId = setTimeout(async () => {
-            try {
-              // Verify the tab is still not audible and not active before removing
-              const tab = await browser.tabs.get(tabId);
-              if (!tab.audible && this.audioTabs.has(tabId)) {
-                // Check if it's still not the active tab
-                const currentActiveTabs = await browser.tabs.query({ active: true, currentWindow: true });
-                const isStillActive = currentActiveTabs.length > 0 && currentActiveTabs[0].id === tabId;
-                if (!isStillActive) {
-                  console.log(`Removing tab ${tabId} from audio list (timeout expired, still not audible, not active)`);
-                  this.audioTabs.delete(tabId);
-                  this.tabRemovalTimeouts.delete(tabId);
-                  this.notifyPopupUpdate();
-                } else {
-                  console.log(`Tab ${tabId} became active again, canceling removal`);
-                  this.tabRemovalTimeouts.delete(tabId);
-                }
-              } else {
-                // Tab became audible again or was removed, just clean up the timeout
-                this.tabRemovalTimeouts.delete(tabId);
-              }
-            } catch (error) {
-              // Tab was closed, clean up
-              this.audioTabs.delete(tabId);
-              this.tabRemovalTimeouts.delete(tabId);
-              this.notifyPopupUpdate();
-            }
-          }, this.REMOVAL_DELAY);
-          
-          this.tabRemovalTimeouts.set(tabId, timeoutId);
-        }
-      }
-      // If it's the active tab, do nothing - keep it in the list
-    } catch (error) {
-      // If we can't determine the active tab, fall back to old behavior but with safeguards
-      if (!this.tabRemovalTimeouts.has(tabId)) {
-        const timeoutId = setTimeout(() => {
-          if (this.audioTabs.has(tabId)) {
-            console.log(`Removing tab ${tabId} from audio list (timeout expired, can't check active state)`);
-            this.audioTabs.delete(tabId);
-            this.tabRemovalTimeouts.delete(tabId);
-            this.notifyPopupUpdate();
-          }
-        }, this.REMOVAL_DELAY);
-        
-        this.tabRemovalTimeouts.set(tabId, timeoutId);
-      }
-    }
-  }
-  
-  /**
-   * Handle URL changes for a tab
-   * @param {number} tabId - Tab ID
-   * @param {string} newUrl - New URL
-   */
-  handleUrlChange(tabId, newUrl) {
-    try {
-      const url = new URL(newUrl);
-      const hostname = url.hostname.toLowerCase();
-      const previousHostname = this.tabHostnames.get(tabId);
-      const hadPreviousVolume = this.tabVolumes.has(tabId);
-      
-      // Reset volume if hostname changed
-      if (hadPreviousVolume && previousHostname && previousHostname !== hostname) {
-        this.tabVolumes.set(tabId, this.DEFAULT_VOLUME);
-        browser.tabs.sendMessage(tabId, { action: 'setVolume', volume: this.DEFAULT_VOLUME }).catch(() => {});
-        this.notifyPopupUpdate();
-      }
-      
-      // Update stored hostname
-      this.tabHostnames.set(tabId, hostname);
-    } catch (error) {
-      // Invalid URL, ignore
-    }
-  }
-  
-  /**
-   * Handle tab removal
-   */
-  handleTabRemoved(tabId) {
-    this.tabVolumes.delete(tabId);
-    this.tabHostnames.delete(tabId);
-    
-    // Clear any pending removal timeout
+  async _handleAudibleStarted(tabId) {
+    await this.ready;
+    this.audioTabs.add(tabId);
+
     if (this.tabRemovalTimeouts.has(tabId)) {
       clearTimeout(this.tabRemovalTimeouts.get(tabId));
       this.tabRemovalTimeouts.delete(tabId);
     }
-    
-    const wasAudioTab = this.audioTabs.has(tabId);
-    this.audioTabs.delete(tabId);
-    
-    if (wasAudioTab) {
+
+    let hostname = this.tabHostnames.get(tabId);
+    if (!hostname) {
+      hostname = await this._ensureHostname(tabId);
+    }
+
+    if (hostname && hostname in this.sitePrefs && !this.tabVolumes.has(tabId)) {
+      // First time hearing audio from this tab — adopt the saved volume.
+      this._applyVolume(tabId, this.sitePrefs[hostname]);
+    } else {
+      // Re-push the canonical volume in case the content script is out of
+      // sync (e.g. its initial pull happened before the URL-change handler
+      // had set the volume).
+      const volume = this.getTabVolume(tabId);
+      browser.tabs.sendMessage(tabId, { action: 'setVolume', volume }).catch(() => {});
+    }
+
+    this.notifyPopupUpdate();
+  }
+
+  async handleAudioStopped(tabId) {
+    if (!this.audioTabs.has(tabId)) return;
+    if (this.tabRemovalTimeouts.has(tabId)) return;
+
+    try {
+      const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (activeTab?.id === tabId) return; // active tab keeps its slot
+    } catch {}
+
+    const timeoutId = setTimeout(async () => {
+      this.tabRemovalTimeouts.delete(tabId);
+      try {
+        const tab = await browser.tabs.get(tabId);
+        if (!tab.audible && this.audioTabs.has(tabId)) {
+          this.audioTabs.delete(tabId);
+          this.notifyPopupUpdate();
+        }
+      } catch {
+        this.audioTabs.delete(tabId);
+        this.notifyPopupUpdate();
+      }
+    }, this.REMOVAL_DELAY);
+
+    this.tabRemovalTimeouts.set(tabId, timeoutId);
+  }
+
+  async handleUrlChange(tabId, newUrl) {
+    await this.ready;
+    const hostname = this._hostnameOf(newUrl);
+    if (!hostname) return;
+
+    const previousHostname = this.tabHostnames.get(tabId);
+    this.tabHostnames.set(tabId, hostname);
+    this._schedulePersistTabs();
+
+    if (previousHostname === hostname) return;
+
+    // Hostname change: prefer a remembered volume, otherwise reset to default.
+    const newVolume = hostname in this.sitePrefs ? this.sitePrefs[hostname] : this.DEFAULT_VOLUME;
+    if (this.tabVolumes.get(tabId) !== newVolume) {
+      this._applyVolume(tabId, newVolume);
       this.notifyPopupUpdate();
     }
   }
-  
-  /**
-   * Handle active tab changes to manage audio tab removal and restoration
-   */
+
+  handleTabRemoved(tabId) {
+    this.tabVolumes.delete(tabId);
+    this.tabHostnames.delete(tabId);
+
+    if (this.tabRemovalTimeouts.has(tabId)) {
+      clearTimeout(this.tabRemovalTimeouts.get(tabId));
+      this.tabRemovalTimeouts.delete(tabId);
+    }
+
+    const wasAudioTab = this.audioTabs.has(tabId);
+    this.audioTabs.delete(tabId);
+
+    this._schedulePersistTabs();
+
+    if (wasAudioTab) this.notifyPopupUpdate();
+  }
+
   async handleTabActivated(activeInfo) {
+    if (this.tabRemovalTimeouts.has(activeInfo.tabId)) {
+      clearTimeout(this.tabRemovalTimeouts.get(activeInfo.tabId));
+      this.tabRemovalTimeouts.delete(activeInfo.tabId);
+    }
+
+    // Schedule removal for now-inactive non-audible audio tabs.
     try {
       const tabs = await browser.tabs.query({});
-      const activeTab = tabs.find(tab => tab.id === activeInfo.tabId);
-      
-      if (activeTab) {
-        // Always cancel any pending removal for the newly active tab
-        if (this.tabRemovalTimeouts.has(activeInfo.tabId)) {
-          clearTimeout(this.tabRemovalTimeouts.get(activeInfo.tabId));
-          this.tabRemovalTimeouts.delete(activeInfo.tabId);
-        }
-        
-        await this.evaluateActiveTabForAudioList(activeTab);
-        await this.scheduleInactiveTabsForRemoval(tabs, activeInfo.tabId);
-      }
-    } catch (error) {
-      console.error('Error handling active tab change:', error);
-    }
-  }
-  
-  /**
-   * Evaluate if the active tab should be in the audio list
-   * @param {Object} activeTab - Active tab object
-   */
-  async evaluateActiveTabForAudioList(activeTab) {
-    const tabId = activeTab.id;
-    let shouldBeInList = false;
-    let reason = '';
-    
-    // First check if tab is currently audible - definitive indicator
-    if (activeTab.audible) {
-      shouldBeInList = true;
-      reason = 'currently audible';
-    }
-    // Second check if tab has a non-default stored volume - indicates user set a preference
-    else if (this.tabVolumes.has(tabId) && this.tabVolumes.get(tabId) !== this.DEFAULT_VOLUME) {
-      shouldBeInList = true;
-      reason = 'has non-default volume setting';
-    }
-    // Third check if tab has any stored volume - indicates it had audio before
-    else if (this.tabVolumes.has(tabId)) {
-      // For default volume, check with content script to see if audio still exists
-      try {
-        const response = await browser.tabs.sendMessage(tabId, { action: 'checkForAudio' });
-        if (response && response.hasAudio) {
-          shouldBeInList = true;
-          reason = 'has stored volume and content script found audio';
-        } else {
-          reason = 'has stored volume but content script found no audio';
-          // Don't add to list, but also don't remove stored volume yet
-        }
-      } catch (error) {
-        // Content script error - assume it should be in list since we have history
-        shouldBeInList = true;
-        reason = 'has stored volume, content script error';
-      }
-    }
-    // Fourth check with content script for audio elements (new tab)
-    else {
-      try {
-        const response = await browser.tabs.sendMessage(tabId, { action: 'checkForAudio' });
-        if (response && response.hasAudio) {
-          shouldBeInList = true;
-          reason = 'new tab, content script found audio';
-        } else {
-          reason = 'new tab, content script found no audio';
-        }
-      } catch (error) {
-        // Content script might not be ready - if we have hostname history, be lenient
-        if (this.tabHostnames.has(tabId)) {
-          shouldBeInList = true;
-          reason = 'new tab, content script error, has hostname history';
-        } else {
-          reason = 'new tab, content script error, no history';
-        }
-      }
-    }
-    
-    console.log(`Tab ${tabId} activation check: shouldBeInList=${shouldBeInList}, reason="${reason}", wasInList=${this.audioTabs.has(tabId)}, volume=${this.tabVolumes.get(tabId) || 'none'}`);
-    
-    if (shouldBeInList) {
-      // Tab should be in the audio list
-      const wasInList = this.audioTabs.has(tabId);
-      this.audioTabs.add(tabId);
-      
-      // Initialize volume if not set
-      if (!this.tabVolumes.has(tabId)) {
-        this.tabVolumes.set(tabId, this.DEFAULT_VOLUME);
-      }
-      
-      // Initialize hostname tracking if needed
-      if (!this.tabHostnames.has(tabId) && activeTab.url) {
-        try {
-          const url = new URL(activeTab.url);
-          this.tabHostnames.set(tabId, url.hostname.toLowerCase());
-        } catch (e) {
-          this.tabHostnames.set(tabId, 'unknown');
-        }
-      }
-      
-      // Only notify if state changed
-      if (!wasInList) {
-        console.log(`Tab ${tabId} added back to audio list`);
-        this.notifyPopupUpdate();
-      }
-    } else {
-      // Tab should not be in the list - remove it if present
-      if (this.audioTabs.has(tabId)) {
-        this.audioTabs.delete(tabId);
-        console.log(`Tab ${tabId} removed from audio list`);
-        this.notifyPopupUpdate();
-      }
-    }
-  }
-  
-  /**
-   * Schedule inactive tabs for removal if they're no longer audible
-   * @param {Array} tabs - All tabs
-   * @param {number} activeTabId - Currently active tab ID
-   */
-  async scheduleInactiveTabsForRemoval(tabs, activeTabId) {
-    for (const tab of tabs) {
-      // Skip the newly activated tab
-      if (tab.id === activeTabId) continue;
-      
-      // If this tab is in audioTabs but not audible and not scheduled for removal,
-      // schedule it for removal now that it's no longer active
-      if (this.audioTabs.has(tab.id) && !tab.audible && !this.tabRemovalTimeouts.has(tab.id)) {
-        const timeoutId = setTimeout(() => {
-          if (this.audioTabs.has(tab.id)) {
-            this.audioTabs.delete(tab.id);
+      for (const tab of tabs) {
+        if (tab.id === activeInfo.tabId) continue;
+        if (this.audioTabs.has(tab.id) && !tab.audible && !this.tabRemovalTimeouts.has(tab.id)) {
+          const timeoutId = setTimeout(() => {
             this.tabRemovalTimeouts.delete(tab.id);
-            this.notifyPopupUpdate();
-          }
-        }, this.REMOVAL_DELAY);
-        
-        this.tabRemovalTimeouts.set(tab.id, timeoutId);
+            if (this.audioTabs.has(tab.id)) {
+              this.audioTabs.delete(tab.id);
+              this.notifyPopupUpdate();
+            }
+          }, this.REMOVAL_DELAY);
+          this.tabRemovalTimeouts.set(tab.id, timeoutId);
+        }
       }
-    }
-  }
-}
+    } catch {}
 
-// Export for use in background script
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = TabManager;
-} else {
-  // Browser environment
-  window.TabManager = TabManager;
+    // Active tab changed → popup needs to re-render with new pinned tab.
+    this.notifyPopupUpdate();
+  }
 }

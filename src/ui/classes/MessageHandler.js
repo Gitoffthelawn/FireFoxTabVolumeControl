@@ -12,7 +12,7 @@ class MessageHandler {
   setupMessageListeners() {
     browser.runtime.onMessage.addListener((message) => {
       if (message.action === 'audioStatusChanged') {
-        this.popupController.loadAudioTabs();
+        this.popupController.loadAudioTabs({ silent: true });
       }
     });
   }
@@ -59,6 +59,22 @@ class MessageHandler {
    */
   async resetAllTabs() {
     return browser.runtime.sendMessage({ action: 'resetAllTabs' });
+  }
+
+  /**
+   * Mark a tab's site as "remembered" (saves current volume for that hostname).
+   * @param {number} tabId
+   */
+  async rememberSite(tabId) {
+    return browser.runtime.sendMessage({ action: 'rememberSite', tabId });
+  }
+
+  /**
+   * Forget a tab's site (removes the persistent volume preference).
+   * @param {number} tabId
+   */
+  async forgetSite(tabId) {
+    return browser.runtime.sendMessage({ action: 'forgetSite', tabId });
   }
 }
 

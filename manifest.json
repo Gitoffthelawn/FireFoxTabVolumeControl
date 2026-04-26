@@ -5,6 +5,7 @@
   "description": "Control volume for individual browser tabs from 0% to 500%. I originally created this for my personal use after being tired of looking through shady add-ons with overreaching permissions.",
   "permissions": [
     "activeTab",
+    "storage",
     "tabs",
     "theme"
   ],
@@ -33,7 +34,6 @@
   }],
   "web_accessible_resources": [{
     "resources": [
-      "src/content/siteHandlers/standardHandler.js",
       "src/content/modules/*.js"
     ],
     "matches": ["<all_urls>"]
@@ -48,7 +48,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "tab-volume-control@sebastianengvall.github.io",
-      "strict_min_version": "112.0"
+      "strict_min_version": "115.0"
     }
   }
 }

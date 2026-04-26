@@ -11,11 +11,11 @@ class TabListManager {
   }
 
   /**
-   * Render the list of audio tabs
+   * Render the list of audio tabs.
    */
   render() {
     const tabs = this.state.getAudioTabs();
-    
+
     if (tabs.length === 0) {
       this.uiManager.showNoAudioMessage();
       return;
@@ -23,31 +23,29 @@ class TabListManager {
 
     this.uiManager.clearTabList();
     const tabList = this.uiManager.getElement('tabList');
-    
+
     tabs.forEach(tab => {
       tabList.appendChild(this.createTabElement(tab));
     });
   }
 
   /**
-   * Update the existing tab list display with current volume values
+   * Update slider values + volume display for the existing tab list, in place.
+   * Used when only volumes change so we don't destroy slider/checkbox state.
    */
   updateDisplay() {
     const tabItems = this.uiManager.getElement('tabList').querySelectorAll('.tab-item');
-    
+
     tabItems.forEach(tabDiv => {
       const slider = tabDiv.querySelector('.volume-slider');
       const tabVolumeDisplay = tabDiv.querySelector('.tab-volume-display');
-      
+
       if (slider && tabVolumeDisplay) {
         const tabId = parseInt(slider.getAttribute('data-tab-id'));
         const tab = this.state.findTab(tabId);
-        
+
         if (tab) {
-          // Update slider value
           slider.value = tab.volume;
-          
-          // Update display
           tabVolumeDisplay.textContent = `${tab.volume}%`;
           tabVolumeDisplay.className = `tab-volume-display ${this.uiManager.getVolumeClass(tab.volume)}`;
         }
@@ -55,22 +53,31 @@ class TabListManager {
     });
   }
 
-  /**
-   * Create a tab element for the UI
-   * @param {Object} tab - Tab object
-   * @returns {HTMLElement} Tab element
-   */
   createTabElement(tab) {
     const tabDiv = document.createElement('div');
     tabDiv.className = 'tab-item';
-    
+    if (tab.active) tabDiv.classList.add('tab-item-active');
+
     const volumeClass = this.uiManager.getVolumeClass(tab.volume);
     const favicon = tab.favIconUrl || CONFIG.UI.DEFAULT_FAVICON;
-    
+    const presetButtons = CONFIG.VOLUMES.PRESETS.map(preset => {
+      const label = preset === 0 ? 'Mute' : `${preset}%`;
+      return `<button class="preset-btn" data-tab-id="${tab.id}" data-volume="${preset}">${label}</button>`;
+    }).join('');
+
+    const rememberControl = tab.hostname
+      ? `
+        <label class="remember-site" title="Save this volume for ${this._escape(tab.hostname)} across browser restarts">
+          <input type="checkbox" class="remember-checkbox" data-tab-id="${tab.id}" ${tab.remembered ? 'checked' : ''}>
+          <span class="remember-label">Remember for ${this._escape(tab.hostname)}</span>
+        </label>
+      `
+      : '';
+
     tabDiv.innerHTML = `
       <div class="tab-header">
         <img class="tab-favicon" src="${favicon}" alt="">
-        <span class="tab-title" title="${tab.title}">${tab.title}</span>
+        <span class="tab-title" title="${this._escape(tab.title)}">${this._escape(tab.title)}</span>
         <span class="tab-volume-display ${volumeClass}">${tab.volume}%</span>
       </div>
       <div class="volume-container">
@@ -79,29 +86,19 @@ class TabListManager {
           <input type="range" class="volume-slider" min="${CONFIG.VOLUMES.MIN}" max="${CONFIG.VOLUMES.MAX}" value="${tab.volume}" data-tab-id="${tab.id}">
           <span class="volume-label">${CONFIG.VOLUMES.MAX}%</span>
         </div>
-        <div class="preset-buttons">
-          <button class="preset-btn" data-tab-id="${tab.id}" data-volume="${CONFIG.VOLUMES.PRESETS[0]}">Mute</button>
-          <button class="preset-btn" data-tab-id="${tab.id}" data-volume="${CONFIG.VOLUMES.PRESETS[1]}">${CONFIG.VOLUMES.PRESETS[1]}%</button>
-          <button class="preset-btn" data-tab-id="${tab.id}" data-volume="${CONFIG.VOLUMES.PRESETS[2]}">${CONFIG.VOLUMES.PRESETS[2]}%</button>
-          <button class="preset-btn" data-tab-id="${tab.id}" data-volume="${CONFIG.VOLUMES.PRESETS[3]}">${CONFIG.VOLUMES.PRESETS[3]}%</button>
-        </div>
+        <div class="preset-buttons">${presetButtons}</div>
+        ${rememberControl}
       </div>
     `;
 
-    // Set up event listeners for this tab
     this.setupTabEvents(tabDiv, tab);
     return tabDiv;
   }
 
-  /**
-   * Set up event listeners for a tab element
-   * @param {HTMLElement} tabDiv - Tab element
-   * @param {Object} tab - Tab object
-   */
   setupTabEvents(tabDiv, tab) {
     const slider = tabDiv.querySelector('.volume-slider');
     const tabVolumeDisplay = tabDiv.querySelector('.tab-volume-display');
-    
+
     slider.addEventListener('input', (e) => {
       const volume = parseInt(e.target.value);
       this.updateTabVolume(tab.id, volume, tabVolumeDisplay);
@@ -114,40 +111,51 @@ class TabListManager {
         this.updateTabVolume(tab.id, volume, tabVolumeDisplay);
       });
     });
+
+    const rememberCheckbox = tabDiv.querySelector('.remember-checkbox');
+    if (rememberCheckbox) {
+      rememberCheckbox.addEventListener('change', (e) => {
+        this.toggleRememberSite(tab.id, e.target.checked);
+      });
+    }
   }
 
-  /**
-   * Update volume for a specific tab
-   * @param {number} tabId - Tab ID
-   * @param {number} volume - Volume level
-   * @param {HTMLElement} tabVolumeDisplay - Display element
-   */
   async updateTabVolume(tabId, volume, tabVolumeDisplay) {
     try {
-      // Update display immediately
       tabVolumeDisplay.textContent = `${volume}%`;
       tabVolumeDisplay.className = `tab-volume-display ${this.uiManager.getVolumeClass(volume)}`;
 
-      // Send to tab and background
       await this.messageHandler.setTabVolume(tabId, volume);
-      
-      // Update local state with validation
       this.state.updateTabVolume(tabId, volume);
     } catch (error) {
       console.error('Failed to update tab volume:', error);
-      
-      // Revert display to previous value if state update failed
+
       const currentTab = this.state.findTab(tabId);
       if (currentTab) {
         tabVolumeDisplay.textContent = `${currentTab.volume}%`;
         tabVolumeDisplay.className = `tab-volume-display ${this.uiManager.getVolumeClass(currentTab.volume)}`;
-        
-        // Also revert the slider
+
         const slider = tabVolumeDisplay.closest('.tab-item').querySelector('.volume-slider');
-        if (slider) {
-          slider.value = currentTab.volume;
-        }
+        if (slider) slider.value = currentTab.volume;
       }
+    }
+  }
+
+  async toggleRememberSite(tabId, remember) {
+    try {
+      if (remember) {
+        await this.messageHandler.rememberSite(tabId);
+      } else {
+        await this.messageHandler.forgetSite(tabId);
+      }
+      // Reflect new state without round-tripping through the full reload path.
+      this.state.updateTabRemembered(tabId, remember);
+    } catch (error) {
+      console.error('Failed to update site preference:', error);
+      // Revert checkbox if the call failed.
+      const currentTab = this.state.findTab(tabId);
+      const checkbox = document.querySelector(`.remember-checkbox[data-tab-id="${tabId}"]`);
+      if (checkbox && currentTab) checkbox.checked = currentTab.remembered ?? false;
     }
   }
 
@@ -159,19 +167,25 @@ class TabListManager {
     const volumePromises = tabs.map(async (tab) => {
       try {
         const response = await this.messageHandler.getTabVolume(tab.id);
-        if (response && response.volume !== undefined) {
-          // Use the state management system to update volume
+        if (response?.volume !== undefined) {
           this.state.updateTabVolume(tab.id, response.volume);
-        } else if (response && response.error) {
-          console.warn(`Failed to get volume for tab ${tab.id}: ${response.error}`);
         }
       } catch (error) {
-        // Background script communication error
-        console.warn(`Failed to sync volume for tab ${tab.id}:`, error);
+        // Background script communication error — non-fatal.
       }
     });
-    
+
     await Promise.all(volumePromises);
+  }
+
+  _escape(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 }
 
