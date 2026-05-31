@@ -12,19 +12,22 @@
     <div class="header">Tab Volume Control</div>
 
     <div class="master-control">
-        <div class="master-title">Master Control</div>
+        <div class="master-header">
+            <span class="master-title">Master Control</span>
+            <span id="masterVolumeDisplay" class="volume-display">100%</span>
+        </div>
         <div class="volume-container">
             <div class="volume-slider-container">
                 <span class="volume-label">0%</span>
                 <input type="range" id="masterVolumeSlider" class="volume-slider" min="0" max="500" value="100">
                 <span class="volume-label">500%</span>
-                <span id="masterVolumeDisplay" class="volume-display">100%</span>
             </div>
             <div class="preset-buttons">
-                <button class="preset-btn" data-volume="0">Mute</button>
-                <button class="preset-btn" data-volume="100">100%</button>
-                <button class="preset-btn" data-volume="200">200%</button>
-                <button class="preset-btn" data-volume="500">500%</button>
+                <button class="preset-btn" data-volume="0">0x</button>
+                <button class="preset-btn" data-volume="50">0.5x</button>
+                <button class="preset-btn" data-volume="100">1x</button>
+                <button class="preset-btn" data-volume="200">2x</button>
+                <button class="preset-btn" data-volume="500">5x</button>
             </div>
             <button id="applyToAllBtn" class="apply-all-btn">Apply to All Tabs</button>
             <div class="master-action-buttons">

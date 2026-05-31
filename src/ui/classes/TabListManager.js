@@ -1,7 +1,7 @@
 /**
  * Tab List Manager class for individual tab management
  */
-import { CONFIG } from '../config.js';
+import { CONFIG, formatPresetLabel } from '../config.js';
 
 class TabListManager {
   constructor(state, uiManager, messageHandler) {
@@ -61,7 +61,7 @@ class TabListManager {
     const volumeClass = this.uiManager.getVolumeClass(tab.volume);
     const favicon = tab.favIconUrl || CONFIG.UI.DEFAULT_FAVICON;
     const presetButtons = CONFIG.VOLUMES.PRESETS.map(preset => {
-      const label = preset === 0 ? 'Mute' : `${preset}%`;
+      const label = formatPresetLabel(preset);
       return `<button class="preset-btn" data-tab-id="${tab.id}" data-volume="${preset}">${label}</button>`;
     }).join('');
 

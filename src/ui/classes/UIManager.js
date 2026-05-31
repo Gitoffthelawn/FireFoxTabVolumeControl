@@ -1,7 +1,7 @@
 /**
  * UI Manager class for DOM element management
  */
-import { CONFIG } from '../config.js';
+import { CONFIG, formatPresetLabel } from '../config.js';
 
 class UIManager {
   constructor() {
@@ -60,7 +60,7 @@ class UIManager {
     CONFIG.VOLUMES.PRESETS.forEach((volume, index) => {
       if (presetButtons[index]) {
         presetButtons[index].setAttribute('data-volume', volume);
-        presetButtons[index].textContent = volume === 0 ? 'Mute' : `${volume}%`;
+        presetButtons[index].textContent = formatPresetLabel(volume);
       }
     });
   }
@@ -110,7 +110,7 @@ class UIManager {
    */
   getVolumeClass(volume) {
     if (volume === 0) return CONFIG.CLASSES.VOLUME_MUTED;
-    if (volume < CONFIG.VOLUME_THRESHOLDS.LOW) return CONFIG.CLASSES.VOLUME_LOW;
+    if (volume <= CONFIG.VOLUME_THRESHOLDS.LOW) return CONFIG.CLASSES.VOLUME_LOW;
     if (volume > CONFIG.VOLUME_THRESHOLDS.HIGH) return CONFIG.CLASSES.VOLUME_HIGH;
     return CONFIG.CLASSES.VOLUME_NORMAL;
   }
