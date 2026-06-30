@@ -16,9 +16,13 @@ class TabManager {
     this.audioTabs = new Set();        // tabIds that are/were audible
     this.tabHostnames = new Map();     // tabId -> hostname
     this.tabRemovalTimeouts = new Map();
+    this.preMuteVolumes = new Map();   // tabId -> volume before mute, for unmute
     this.sitePrefs = {};               // hostname -> volume
 
     this.DEFAULT_VOLUME = 100;
+    this.VOLUME_MIN = 0;
+    this.VOLUME_MAX = 500;
+    this.VOLUME_STEP = 10;             // keyboard-shortcut increment
     this.REMOVAL_DELAY = 3000;
     this.PERSIST_DEBOUNCE = 250;
 
@@ -79,6 +83,9 @@ class TabManager {
       for (const tabId of [...this.tabHostnames.keys()]) {
         if (!liveIds.has(tabId)) { this.tabHostnames.delete(tabId); changed = true; }
       }
+      for (const tabId of [...this.preMuteVolumes.keys()]) {
+        if (!liveIds.has(tabId)) { this.preMuteVolumes.delete(tabId); changed = true; }
+      }
       for (const tabId of [...this.audioTabs]) {
         if (!liveIds.has(tabId)) { this.audioTabs.delete(tabId); changed = true; }
       }
@@ -91,7 +98,7 @@ class TabManager {
 
   async _loadFromStorage() {
     try {
-      const session = await browser.storage.session.get(['tabVolumes', 'tabHostnames']);
+      const session = await browser.storage.session.get(['tabVolumes', 'tabHostnames', 'preMuteVolumes']);
       if (session.tabVolumes) {
         this.tabVolumes = new Map(
           Object.entries(session.tabVolumes).map(([k, v]) => [parseInt(k, 10), v])
@@ -100,6 +107,11 @@ class TabManager {
       if (session.tabHostnames) {
         this.tabHostnames = new Map(
           Object.entries(session.tabHostnames).map(([k, v]) => [parseInt(k, 10), v])
+        );
+      }
+      if (session.preMuteVolumes) {
+        this.preMuteVolumes = new Map(
+          Object.entries(session.preMuteVolumes).map(([k, v]) => [parseInt(k, 10), v])
         );
       }
       const local = await browser.storage.local.get('sitePrefs');
@@ -118,7 +130,8 @@ class TabManager {
     try {
       await browser.storage.session.set({
         tabVolumes: Object.fromEntries(this.tabVolumes),
-        tabHostnames: Object.fromEntries(this.tabHostnames)
+        tabHostnames: Object.fromEntries(this.tabHostnames),
+        preMuteVolumes: Object.fromEntries(this.preMuteVolumes)
       });
     } catch (error) {
       console.warn('Tab Volume Control: failed to persist tab state', error);
@@ -201,6 +214,43 @@ class TabManager {
       this.sitePrefs[hostname] = volume;
       this._schedulePersistSitePrefs();
     }
+  }
+
+  /**
+   * Shift a tab's volume by `delta`, clamped to [VOLUME_MIN, VOLUME_MAX].
+   * Used by the keyboard-shortcut commands. Routes through setTabVolume so
+   * the content script, persistence, and any remembered site preference all
+   * stay in sync — exactly as if the slider had moved.
+   */
+  async nudgeTabVolume(tabId, delta) {
+    await this.ready;
+    const current = this.getTabVolume(tabId);
+    const next = Math.max(this.VOLUME_MIN, Math.min(this.VOLUME_MAX, current + delta));
+    if (next !== current) await this.setTabVolume(tabId, next);
+    return next;
+  }
+
+  /**
+   * Toggle mute for a tab. Muting stores the current volume so unmuting can
+   * restore it; if nothing was stored (e.g. background was suspended and the
+   * tab is already at 0) unmute falls back to the default volume.
+   */
+  async toggleTabMute(tabId) {
+    await this.ready;
+    const current = this.getTabVolume(tabId);
+
+    if (current > 0) {
+      this.preMuteVolumes.set(tabId, current);
+      this._schedulePersistTabs();
+      await this.setTabVolume(tabId, 0);
+      return 0;
+    }
+
+    const restore = this.preMuteVolumes.get(tabId) ?? this.DEFAULT_VOLUME;
+    this.preMuteVolumes.delete(tabId);
+    this._schedulePersistTabs();
+    await this.setTabVolume(tabId, restore);
+    return restore;
   }
 
   async getAudioTabStatus() {
@@ -367,6 +417,7 @@ class TabManager {
   handleTabRemoved(tabId) {
     this.tabVolumes.delete(tabId);
     this.tabHostnames.delete(tabId);
+    this.preMuteVolumes.delete(tabId);
 
     if (this.tabRemovalTimeouts.has(tabId)) {
       clearTimeout(this.tabRemovalTimeouts.get(tabId));

@@ -27,6 +27,20 @@
       "src/background/background.js"
     ]
   },
+  "commands": {
+    "volume-up": {
+      "suggested_key": { "default": "Alt+Shift+Up" },
+      "description": "Increase volume of the current tab"
+    },
+    "volume-down": {
+      "suggested_key": { "default": "Alt+Shift+Down" },
+      "description": "Decrease volume of the current tab"
+    },
+    "toggle-mute": {
+      "suggested_key": { "default": "Alt+Shift+M" },
+      "description": "Mute / unmute the current tab"
+    }
+  },
   "content_scripts": [{
     "matches": ["<all_urls>"],
     "js": ["src/content/content.js"],

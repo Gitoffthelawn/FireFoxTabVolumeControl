@@ -8,6 +8,39 @@
 
 const tabManager = new TabManager();
 
+/**
+ * Keyboard shortcuts (configured by the user in about:addons → Manage
+ * Extension Shortcuts). Each command acts on the active tab of the current
+ * window only.
+ */
+browser.commands.onCommand.addListener(async (command) => {
+  let tabId;
+  try {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    tabId = tab?.id;
+  } catch {
+    return;
+  }
+  if (tabId === undefined) return;
+
+  switch (command) {
+    case 'volume-up':
+      await tabManager.nudgeTabVolume(tabId, tabManager.VOLUME_STEP);
+      break;
+    case 'volume-down':
+      await tabManager.nudgeTabVolume(tabId, -tabManager.VOLUME_STEP);
+      break;
+    case 'toggle-mute':
+      await tabManager.toggleTabMute(tabId);
+      break;
+    default:
+      return;
+  }
+
+  // Keep an open popup in sync with the shortcut-driven change.
+  tabManager.notifyPopupUpdate();
+});
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = message.tabId ?? sender.tab?.id;
 
