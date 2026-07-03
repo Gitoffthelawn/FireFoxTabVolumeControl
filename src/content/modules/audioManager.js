@@ -1,16 +1,14 @@
 /**
- * AudioManager - Handles Web Audio API operations for volume amplification
+ * AudioManager - Routes media elements through Web Audio for amplification.
  */
-
-import { VOLUME_MAX } from './constants.js';
 
 class AudioManager {
   constructor() {
     this.audioContext = null;
     this.gainNode = null;
+    this.routedElements = new WeakSet();  // ever routed through createMediaElementSource
     this.connectedElements = new Set();
-    this.blockedSites = new Set();
-    this.blockedElements = new WeakSet();
+    this.blockedElements = new WeakSet(); // elements Web Audio rejected
   }
 
   initAudioContext() {
@@ -25,14 +23,6 @@ class AudioManager {
       console.warn('Tab Volume Control: AudioContext unavailable', error);
       return false;
     }
-  }
-
-  isSiteBlocked() {
-    return this.blockedSites.has(window.location.hostname.toLowerCase());
-  }
-
-  markSiteAsBlocked() {
-    this.blockedSites.add(window.location.hostname.toLowerCase());
   }
 
   /**
@@ -74,6 +64,13 @@ class AudioManager {
   }
 
   /**
+   * Whether the element was ever routed through Web Audio.
+   */
+  hasSource(element) {
+    return this.routedElements.has(element);
+  }
+
+  /**
    * Try to route element through Web Audio. Once routed, never disconnect:
    * disconnecting a MediaElementAudioSourceNode permanently kills audio for
    * that element.
@@ -82,7 +79,7 @@ class AudioManager {
     if (!this.audioContext || !this.gainNode) return false;
     if (this.connectedElements.has(element)) return true;
 
-    if (element._audioSource) {
+    if (this.routedElements.has(element)) {
       // Already routed previously, re-track without reconnecting.
       this.connectedElements.add(element);
       return true;
@@ -95,51 +92,26 @@ class AudioManager {
     try {
       const source = this.audioContext.createMediaElementSource(element);
       source.connect(this.gainNode);
+      this.routedElements.add(element);
       this.connectedElements.add(element);
-      element._audioSource = source;
       return true;
-    } catch (e) {
+    } catch {
       this.blockedElements.add(element);
       return false;
     }
   }
 
   setGainValue(volume) {
-    if (this.gainNode && !this.isSiteBlocked() && this.connectedElements.size > 0) {
-      this.gainNode.gain.value = volume / VOLUME_MAX;
+    if (this.gainNode && this.connectedElements.size > 0) {
+      this.gainNode.gain.value = volume / VOLUME_SCALE;
     }
-  }
-
-  isAmplificationAvailable() {
-    return !this.isSiteBlocked() && (this.audioContext || this.initAudioContext());
   }
 
   /**
    * Stop tracking an element without disconnecting its source node.
-   * The audio routing remains intact — disconnecting would kill playback.
+   * The audio routing remains intact - disconnecting would kill playback.
    */
   cleanupAudioSource(element) {
     this.connectedElements.delete(element);
   }
-
-  reset() {
-    this.blockedSites.clear();
-    this.blockedElements = new WeakSet();
-
-    // Closing the AudioContext is the only safe way to fully clean up;
-    // disconnecting individual source nodes would break audio permanently.
-    if (this.audioContext) {
-      try { this.audioContext.close(); } catch {}
-      this.audioContext = null;
-      this.gainNode = null;
-    }
-
-    this.connectedElements.clear();
-  }
-
-  getConnectedElementsCount() {
-    return this.connectedElements.size;
-  }
 }
-
-export default AudioManager;

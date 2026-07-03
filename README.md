@@ -57,7 +57,7 @@ The add-on uses the Web Audio API to modify audio output:
    - For standard volume reduction (0-100%): Uses the native HTML5 media element volume property.
    - For volume amplification (100-500%): Creates an AudioContext with a GainNode to boost the audio signal.
 
-3. **Site-Specific Handling**: Custom handlers for sites can implement audio in non-standard ways.
+3. **Media Detection**: A MutationObserver and periodic scans (including open shadow DOM, used by players like Reddit's) find media elements as they appear, so dynamically loaded players are picked up automatically.
 
 ## License
 

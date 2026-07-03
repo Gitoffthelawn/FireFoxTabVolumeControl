@@ -1,29 +1,26 @@
 /**
- * VolumeController - Handles volume application logic and coordination
+ * VolumeController - Decides how to apply a volume to each media element:
+ * Web Audio gain when the element can be routed, native HTML5 volume as
+ * fallback (e.g. cross-origin media that Web Audio would silence).
  */
-
-import { VOLUME_MAX, VOLUME_AMPLIFICATION_THRESHOLD, DEFAULT_VOLUME } from './constants.js';
 
 class VolumeController {
   constructor(audioManager) {
     this.audioManager = audioManager;
     this.currentVolume = DEFAULT_VOLUME;
+    this.html5Adjusted = new WeakSet(); // elements whose native volume we changed
   }
 
-  /**
-   * Apply volume to a specific media element.
-   */
   applyVolumeToElement(element, volume = this.currentVolume) {
-    // Default volume on a never-connected element: leave the browser alone.
-    if (volume === DEFAULT_VOLUME && !element._audioSource) {
-      return;
-    }
-
-    // Already routed through Web Audio: just update gain, don't reconnect.
-    if (element._audioSource && volume === DEFAULT_VOLUME) {
-      if (this.audioManager.audioContext && this.audioManager.gainNode) {
+    if (volume === DEFAULT_VOLUME) {
+      if (this.audioManager.hasSource(element)) {
         this.audioManager.setGainValue(volume);
+      } else if (this.html5Adjusted.has(element)) {
+        // Undo an earlier fallback adjustment.
+        this.html5Adjusted.delete(element);
+        element.volume = 1;
       }
+      // Untouched element at default volume: leave the browser alone.
       return;
     }
 
@@ -37,16 +34,19 @@ class VolumeController {
       return;
     }
 
-    const connected = this.audioManager.tryConnectToAudioContext(element);
-    if (!connected) {
+    if (this.audioManager.tryConnectToAudioContext(element)) {
+      // A late joiner must pick up the current gain - a fresh GainNode
+      // starts at 1.0 regardless of the tab's chosen volume.
+      this.audioManager.setGainValue(volume);
+    } else {
       this._applyHtml5Fallback(element, volume);
     }
   }
 
   _applyHtml5Fallback(element, volume) {
     // HTML5 volume property maxes out at 1.0; clamp amplification.
-    const clampedVolume = Math.min(volume, VOLUME_AMPLIFICATION_THRESHOLD);
-    element.volume = clampedVolume / VOLUME_MAX;
+    element.volume = Math.min(volume, VOLUME_SCALE) / VOLUME_SCALE;
+    this.html5Adjusted.add(element);
   }
 
   /**
@@ -55,37 +55,10 @@ class VolumeController {
   setVolume(volume, mediaRegistry) {
     this.currentVolume = volume;
 
-    const hasConnectedElements = this.audioManager.getConnectedElementsCount() > 0;
-    if (volume === DEFAULT_VOLUME && !hasConnectedElements) {
-      return;
-    }
+    mediaRegistry.applyToAllElements((element) => {
+      this.applyVolumeToElement(element, volume);
+    });
 
-    if (mediaRegistry) {
-      mediaRegistry.applyToAllElements((element) => {
-        this.applyVolumeToElement(element, volume);
-      });
-    }
-
-    if (!this.audioManager.isSiteBlocked() && this.audioManager.getConnectedElementsCount() > 0) {
-      this.audioManager.setGainValue(volume);
-    }
-  }
-
-  getCurrentVolume() {
-    return this.currentVolume;
-  }
-
-  isAmplificationAvailable() {
-    return this.audioManager.isAmplificationAvailable();
-  }
-
-  isSiteBlocked() {
-    return this.audioManager.isSiteBlocked();
-  }
-
-  reset(defaultVolume = DEFAULT_VOLUME) {
-    this.currentVolume = defaultVolume;
+    this.audioManager.setGainValue(volume);
   }
 }
-
-export default VolumeController;

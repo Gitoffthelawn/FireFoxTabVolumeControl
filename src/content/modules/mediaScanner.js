@@ -1,190 +1,115 @@
 /**
- * MediaScanner - Handles detection and scanning for media elements
+ * MediaScanner - Finds media elements and feeds them to the registry.
+ *
+ * Discovery paths, cheapest first:
+ *   1. A capturing 'play' listener - catches anything that actually plays
+ *      in the light DOM ('play' does not cross shadow boundaries).
+ *   2. A MutationObserver on the document - registers added audio/video
+ *      immediately and marks the page dirty for the next full scan.
+ *   3. The same observer attached to every open shadow root found by a
+ *      full scan - document-level observation can't see inside shadow
+ *      roots, so each one is observed individually.
+ *   4. A periodic full scan, skipped while nothing changed - the initial
+ *      sweep and the safety net that discovers new shadow roots.
  */
-
-import { ADDITIONAL_SELECTORS } from './constants.js';
 
 class MediaScanner {
   constructor(mediaRegistry) {
     this.mediaRegistry = mediaRegistry;
     this.mutationObserver = null;
+    this.observedShadowRoots = new WeakSet();
+    this.needsScan = true;
   }
 
   /**
-   * Scan for media elements in the document
+   * Run a full scan only if the DOM changed since the last one.
    */
+  scanIfPageChanged() {
+    if (this.needsScan) {
+      this.scanForMediaElements();
+    }
+  }
+
   scanForMediaElements() {
-    // Scan for direct audio/video elements
-    const directElements = document.querySelectorAll('audio, video');
-    directElements.forEach(element => {
+    this.needsScan = false;
+
+    document.querySelectorAll('audio, video').forEach(element => {
       this.mediaRegistry.registerMediaElement(element);
     });
-    
-    // Scan nested elements in common containers
-    ADDITIONAL_SELECTORS.forEach(selector => {
-      try {
-        const containers = document.querySelectorAll(selector);
-        
-        containers.forEach(container => {
-          // Look for nested audio/video
-          const nestedElements = container.querySelectorAll('audio, video');
-          nestedElements.forEach(element => {
-            this.mediaRegistry.registerMediaElement(element);
-          });
-          
-          // Special handling for custom players with shadow DOM
-          if (container.tagName && container.tagName.toLowerCase().includes('shreddit')) {
-            this.handleCustomPlayer(container);
-          }
-        });
-      } catch (e) {
-        console.warn(`Error scanning selector "${selector}":`, e);
-      }
-    });
-    
-    // Scan shadow DOM elements
+
     this.scanShadowDOMElements();
+    this.mediaRegistry.cleanupOrphanedElements();
   }
 
   /**
-   * Handle custom video player components with shadow DOM
-   * @param {Element} playerElement - The custom player element
-   */
-  handleCustomPlayer(playerElement) {
-    // Check if shadow root exists and scan it
-    if (playerElement.shadowRoot) {
-      playerElement.shadowRoot.querySelectorAll('audio, video').forEach(element => {
-        this.mediaRegistry.registerMediaElement(element);
-      });
-    }
-    
-    // Set up observer for when media elements are added to this player
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.tagName === 'AUDIO' || node.tagName === 'VIDEO') {
-              this.mediaRegistry.registerMediaElement(node);
-            }
-            if (node.querySelectorAll) {
-              node.querySelectorAll('audio, video').forEach(element => {
-                this.mediaRegistry.registerMediaElement(element);
-              });
-            }
-          }
-        });
-      });
-    });
-    
-    observer.observe(playerElement, { childList: true, subtree: true });
-    
-    // Also wait a bit and re-scan, as custom players may load media elements asynchronously
-    setTimeout(() => {
-      playerElement.querySelectorAll('audio, video').forEach(element => {
-        this.mediaRegistry.registerMediaElement(element);
-      });
-    }, 1000);
-  }
-
-  /**
-   * Scan for media elements in shadow DOM
+   * Walk open shadow roots for media, and start observing each root found
+   * so media injected into it later (invisible to the document observer,
+   * and whose 'play' events don't compose across the boundary) still
+   * registers immediately.
    */
   scanShadowDOMElements() {
     document.querySelectorAll('*').forEach(element => {
-      if (element.shadowRoot) {
-        try {
-          element.shadowRoot.querySelectorAll('audio, video').forEach(shadowElement => {
-            this.mediaRegistry.registerMediaElement(shadowElement);
-          });
-        } catch (e) {
-          // Shadow DOM access might be restricted
-        }
+      const root = element.shadowRoot;
+      if (!root) return;
+
+      root.querySelectorAll('audio, video').forEach(shadowElement => {
+        this.mediaRegistry.registerMediaElement(shadowElement);
+      });
+
+      if (this.mutationObserver && !this.observedShadowRoots.has(root)) {
+        this.mutationObserver.observe(root, { childList: true, subtree: true });
+        this.observedShadowRoots.add(root);
       }
     });
   }
 
-  /**
-   * Set up observers for dynamic content
-   */
   setupObservers() {
-    // Watch for new media elements
     this.mutationObserver = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        // Handle added nodes
-        mutation.addedNodes.forEach((node) => {
-          this.handleAddedNode(node);
-        });
-        
-        // Handle removed nodes
-        mutation.removedNodes.forEach((node) => {
-          this.handleRemovedNode(node);
-        });
-      });
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          this.registerSubtree(node);
+          // Only element churn warrants a rescan; text-node updates
+          // (tickers, chats, clocks) can't introduce media or shadow roots.
+          this.needsScan = true;
+        }
+
+        if (this.mediaRegistry.hasElements()) {
+          for (const node of mutation.removedNodes) {
+            this.cleanupSubtree(node);
+          }
+        }
+      }
     });
 
-    this.mutationObserver.observe(document.body || document.documentElement, { 
-      childList: true, 
-      subtree: true 
+    this.mutationObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true
     });
-    
-    // Listen for play events
+
     document.addEventListener('play', (event) => {
-      if (event.target && (event.target.tagName === 'AUDIO' || event.target.tagName === 'VIDEO')) {
-        this.mediaRegistry.registerMediaElement(event.target);
-      }
+      this.mediaRegistry.registerMediaElement(event.target);
     }, true);
   }
 
   /**
-   * Handle nodes added to the DOM
+   * Register a just-added element and any media inside it.
    */
-  handleAddedNode(node) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.tagName === 'AUDIO' || node.tagName === 'VIDEO') {
-        this.mediaRegistry.registerMediaElement(node);
-      }
-      if (node.querySelectorAll) {
-        node.querySelectorAll('audio, video').forEach(element => {
-          this.mediaRegistry.registerMediaElement(element);
-        });
-      }
-    }
+  registerSubtree(node) {
+    this.mediaRegistry.registerMediaElement(node);
+    node.querySelectorAll('audio, video').forEach(element => {
+      this.mediaRegistry.registerMediaElement(element);
+    });
   }
 
   /**
-   * Handle nodes removed from the DOM
+   * Untrack a just-removed element and any media inside it.
    */
-  handleRemovedNode(node) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.tagName === 'AUDIO' || node.tagName === 'VIDEO') {
-        // Don't force disconnect - it permanently breaks audio
-        this.mediaRegistry.cleanupMediaElement(node);
-      }
-      if (node.querySelectorAll) {
-        node.querySelectorAll('audio, video').forEach(element => {
-          // Don't force disconnect - it permanently breaks audio
-          this.mediaRegistry.cleanupMediaElement(element);
-        });
-      }
-    }
-  }
-
-  /**
-   * Stop observing for changes
-   */
-  disconnect() {
-    if (this.mutationObserver) {
-      this.mutationObserver.disconnect();
-      this.mutationObserver = null;
-    }
-  }
-
-  /**
-   * Reset scanner state (for navigation)
-   */
-  reset() {
-    this.disconnect();
+  cleanupSubtree(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    this.mediaRegistry.cleanupMediaElement(node);
+    node.querySelectorAll('audio, video').forEach(element => {
+      this.mediaRegistry.cleanupMediaElement(element);
+    });
   }
 }
-
-export default MediaScanner;

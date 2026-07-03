@@ -43,8 +43,9 @@ Firefox Tab Volume Control is a browser extension that enables users to control 
 
 2. **Content Security**:
    - Follow Firefox's security policies
-   - Use web_accessible_resources for required files
+   - Avoid web_accessible_resources (content scripts are loaded via the manifest's ordered js list instead)
    - Avoid inline script execution in injected content
+   - Never assign untrusted values via innerHTML; set textContent/properties on a static template
    - Follow Mozilla Add-on store guidelines
 
 3. **Manifest Configuration**:

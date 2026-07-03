@@ -283,12 +283,23 @@ class TabManager {
     return result;
   }
 
+  /**
+   * Apply a volume to every tab the popup lists: audio tabs, audible tabs,
+   * and the active tab (which getAudioTabStatus pins into the list so users
+   * can pre-set volume) — keeping "Apply to All" consistent with what the
+   * user sees.
+   */
   async applyToAllTabs(volume) {
     await this.ready;
-    const tabs = await browser.tabs.query({});
+    const [tabs, activeTabs] = await Promise.all([
+      browser.tabs.query({}),
+      browser.tabs.query({ active: true, currentWindow: true })
+    ]);
+    const activeTabId = activeTabs[0]?.id;
+
     await Promise.all(
       tabs
-        .filter(tab => this.audioTabs.has(tab.id) || tab.audible)
+        .filter(tab => this.audioTabs.has(tab.id) || tab.audible || tab.id === activeTabId)
         .map(tab => this.setTabVolume(tab.id, volume))
     );
   }
