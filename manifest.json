@@ -28,6 +28,10 @@
     ]
   },
   "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+V" },
+      "description": "Open the volume control popup"
+    },
     "volume-up": {
       "suggested_key": { "default": "Alt+Shift+Up" },
       "description": "Increase volume of the current tab"
