@@ -9,6 +9,7 @@ class AudioManager {
     this.routedElements = new WeakSet();  // ever routed through createMediaElementSource
     this.connectedElements = new Set();
     this.blockedElements = new WeakSet(); // elements Web Audio rejected
+    this.pageManagedElements = new WeakSet(); // elements the page routes through its own Web Audio
   }
 
   initAudioContext() {
@@ -58,8 +59,26 @@ class AudioManager {
     }
   }
 
+  /**
+   * The page called createMediaElementSource() on this element. An element
+   * feeds at most one source node, so it is the page's now - see pageHooks.js.
+   */
+  markPageManaged(element) {
+    this.pageManagedElements.add(element);
+  }
+
+  /**
+   * Whether this element must stay on the native HTML5 volume path.
+   *
+   * Detached elements (never inserted into the DOM, e.g. SoundCloud's
+   * player) are never routed: such sites typically own the element's Web
+   * Audio graph, and taking the element first would break their player.
+   * They get 0-100% but no amplification.
+   */
   shouldBlockAmplification(element) {
     if (this.blockedElements.has(element)) return true;
+    if (this.pageManagedElements.has(element)) return true;
+    if (!element.isConnected) return true;
     return this.isCrossOriginElement(element);
   }
 

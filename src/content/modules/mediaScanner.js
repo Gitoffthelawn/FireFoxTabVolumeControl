@@ -2,6 +2,10 @@
  * MediaScanner - Finds media elements and feeds them to the registry.
  *
  * Discovery paths, cheapest first:
+ *   0. The page-level play() hook (pageHooks.js, installed by content.js) -
+ *      catches every element that plays, even ones never inserted into the
+ *      DOM or hidden in closed shadow roots. The paths below still matter:
+ *      they find media before it plays and cover browsers without the hook.
  *   1. A capturing 'play' listener - catches anything that actually plays
  *      in the light DOM ('play' does not cross shadow boundaries).
  *   2. A MutationObserver on the document - registers added audio/video

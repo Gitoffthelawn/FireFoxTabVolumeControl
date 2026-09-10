@@ -15,6 +15,11 @@ const volumeController = new VolumeController(audioManager);
 const mediaRegistry = new MediaElementRegistry(volumeController, audioManager);
 const mediaScanner = new MediaScanner(mediaRegistry);
 
+// Wrap the page's play() before any page script can run (we are at
+// document_start), so media the page never attaches to the DOM still
+// reaches the registry. See pageHooks.js.
+installPageHooks(mediaRegistry, audioManager, volumeController);
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.action) {
     case 'setVolume':

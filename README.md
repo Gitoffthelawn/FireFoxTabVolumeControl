@@ -57,7 +57,9 @@ The add-on uses the Web Audio API to modify audio output:
    - For standard volume reduction (0-100%): Uses the native HTML5 media element volume property.
    - For volume amplification (100-500%): Creates an AudioContext with a GainNode to boost the audio signal.
 
-3. **Media Detection**: A MutationObserver and periodic scans (including open shadow DOM, used by players like Reddit's) find media elements as they appear, so dynamically loaded players are picked up automatically.
+3. **Media Detection**: A MutationObserver and periodic scans (including open shadow DOM, used by players like Reddit's) find media elements as they appear, so dynamically loaded players are picked up automatically. The page's own `play()` is also hooked, which catches players that never attach their audio element to the DOM (SoundCloud, for example).
+
+4. **Limitations**: Media that cannot be routed through the Web Audio API falls back to the native volume property, so it can be turned down (0-100%) but not amplified. This applies to cross-origin media without CORS headers and to players that keep their audio element outside the DOM, such as SoundCloud.
 
 ## License
 

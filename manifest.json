@@ -54,6 +54,7 @@
       "src/content/modules/volumeController.js",
       "src/content/modules/mediaElementRegistry.js",
       "src/content/modules/mediaScanner.js",
+      "src/content/modules/pageHooks.js",
       "src/content/content.js"
     ],
     "run_at": "document_start"

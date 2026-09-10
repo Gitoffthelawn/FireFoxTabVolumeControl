@@ -9,6 +9,37 @@ class VolumeController {
     this.audioManager = audioManager;
     this.currentVolume = DEFAULT_VOLUME;
     this.html5Adjusted = new WeakSet(); // elements whose native volume we changed
+    // What the page last set an element's volume to (fed by pageHooks.js).
+    // On the HTML5 fallback path the element's real volume is this value
+    // times our factor, while the page keeps reading back its own value -
+    // so a player that re-asserts its volume on 'volumechange' never fights
+    // us, and our attenuation stacks on the page's own volume rather than
+    // replacing it.
+    this.pageVolumes = new WeakMap();
+  }
+
+  /**
+   * The volume the page believes the element has.
+   */
+  getPageVolume(element) {
+    const recorded = this.pageVolumes.get(element);
+    return recorded !== undefined ? recorded : element.volume;
+  }
+
+  /**
+   * The page wants to set the element's volume. Records the wish and
+   * applies it, scaled by our factor when the element is on the HTML5 path.
+   */
+  setPageVolume(element, value) {
+    const number = Number(value);
+    if (!(Number.isFinite(number) && number >= 0 && number <= 1)) {
+      element.volume = value; // let the native setter reject it
+      return;
+    }
+    this.pageVolumes.set(element, number);
+    element.volume = this.html5Adjusted.has(element)
+      ? number * this._html5Factor(this.currentVolume)
+      : number;
   }
 
   applyVolumeToElement(element, volume = this.currentVolume) {
@@ -16,25 +47,33 @@ class VolumeController {
       if (this.audioManager.hasSource(element)) {
         this.audioManager.setGainValue(volume);
       } else if (this.html5Adjusted.has(element)) {
-        // Undo an earlier fallback adjustment.
-        this.html5Adjusted.delete(element);
-        element.volume = 1;
+        this._restoreHtml5(element);
       }
       // Untouched element at default volume: leave the browser alone.
       return;
     }
 
-    if (this.audioManager.shouldBlockAmplification(element)) {
-      this._applyHtml5Fallback(element, volume);
-      return;
-    }
+    // An element already routed through our GainNode stays on the gain
+    // path for good, whatever its current state - routing is permanent.
+    if (!this.audioManager.hasSource(element)) {
+      if (this.audioManager.shouldBlockAmplification(element)) {
+        this._applyHtml5Fallback(element, volume);
+        return;
+      }
 
-    if (!this.audioManager.audioContext && !this.audioManager.initAudioContext()) {
-      this._applyHtml5Fallback(element, volume);
-      return;
+      if (!this.audioManager.audioContext && !this.audioManager.initAudioContext()) {
+        this._applyHtml5Fallback(element, volume);
+        return;
+      }
     }
 
     if (this.audioManager.tryConnectToAudioContext(element)) {
+      // The element may have used the HTML5 fallback earlier (e.g. it was
+      // created detached and attached later). Its native volume would now
+      // stack on top of the gain, so restore it.
+      if (this.html5Adjusted.has(element)) {
+        this._restoreHtml5(element);
+      }
       // A late joiner must pick up the current gain - a fresh GainNode
       // starts at 1.0 regardless of the tab's chosen volume.
       this.audioManager.setGainValue(volume);
@@ -43,10 +82,24 @@ class VolumeController {
     }
   }
 
+  // HTML5 volume maxes out at 1.0, so amplification is clamped away here.
+  _html5Factor(volume) {
+    return Math.min(volume, VOLUME_SCALE) / VOLUME_SCALE;
+  }
+
   _applyHtml5Fallback(element, volume) {
-    // HTML5 volume property maxes out at 1.0; clamp amplification.
-    element.volume = Math.min(volume, VOLUME_SCALE) / VOLUME_SCALE;
+    const pageVolume = this.getPageVolume(element);
+    this.pageVolumes.set(element, pageVolume);
     this.html5Adjusted.add(element);
+    element.volume = pageVolume * this._html5Factor(volume);
+  }
+
+  /**
+   * Undo an earlier fallback adjustment: give the page its own volume back.
+   */
+  _restoreHtml5(element) {
+    this.html5Adjusted.delete(element);
+    element.volume = this.getPageVolume(element);
   }
 
   /**
