@@ -4,9 +4,9 @@
  * Owns per-tab and per-site volume state.
  *
  * Persistence:
- *   - storage.session: per-tab volume + hostname. Survives background script
- *     suspension within a session; cleared on browser restart, which matches
- *     the lifetime of tab IDs.
+ *   - storage.session: per-tab volume, hostname and amplification status.
+ *     Survives background script suspension within a session; cleared on
+ *     browser restart, which matches the lifetime of tab IDs.
  *   - storage.local:   per-hostname "remembered" volume. Survives restarts.
  */
 
@@ -17,6 +17,7 @@ class TabManager {
     this.tabHostnames = new Map();     // tabId -> hostname
     this.tabRemovalTimeouts = new Map();
     this.preMuteVolumes = new Map();   // tabId -> volume before mute, for unmute
+    this.tabAmplification = new Map(); // tabId -> Map(frameId -> block reason | null)
     this.sitePrefs = {};               // hostname -> volume
 
     this.DEFAULT_VOLUME = 100;
@@ -89,6 +90,9 @@ class TabManager {
       for (const tabId of [...this.audioTabs]) {
         if (!liveIds.has(tabId)) { this.audioTabs.delete(tabId); changed = true; }
       }
+      for (const tabId of [...this.tabAmplification.keys()]) {
+        if (!liveIds.has(tabId)) { this.tabAmplification.delete(tabId); changed = true; }
+      }
 
       if (changed) this._schedulePersistTabs();
     } catch (error) {
@@ -98,7 +102,7 @@ class TabManager {
 
   async _loadFromStorage() {
     try {
-      const session = await browser.storage.session.get(['tabVolumes', 'tabHostnames', 'preMuteVolumes']);
+      const session = await browser.storage.session.get(['tabVolumes', 'tabHostnames', 'preMuteVolumes', 'tabAmplification']);
       if (session.tabVolumes) {
         this.tabVolumes = new Map(
           Object.entries(session.tabVolumes).map(([k, v]) => [parseInt(k, 10), v])
@@ -112,6 +116,14 @@ class TabManager {
       if (session.preMuteVolumes) {
         this.preMuteVolumes = new Map(
           Object.entries(session.preMuteVolumes).map(([k, v]) => [parseInt(k, 10), v])
+        );
+      }
+      if (session.tabAmplification) {
+        this.tabAmplification = new Map(
+          Object.entries(session.tabAmplification).map(([tabId, frames]) => [
+            parseInt(tabId, 10),
+            new Map(Object.entries(frames).map(([frameId, reason]) => [parseInt(frameId, 10), reason]))
+          ])
         );
       }
       const local = await browser.storage.local.get('sitePrefs');
@@ -131,7 +143,10 @@ class TabManager {
       await browser.storage.session.set({
         tabVolumes: Object.fromEntries(this.tabVolumes),
         tabHostnames: Object.fromEntries(this.tabHostnames),
-        preMuteVolumes: Object.fromEntries(this.preMuteVolumes)
+        preMuteVolumes: Object.fromEntries(this.preMuteVolumes),
+        tabAmplification: Object.fromEntries(
+          [...this.tabAmplification].map(([tabId, frames]) => [tabId, Object.fromEntries(frames)])
+        )
       });
     } catch (error) {
       console.warn('Tab Volume Control: failed to persist tab state', error);
@@ -186,6 +201,40 @@ class TabManager {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * A content script reported whether its frame's media can be amplified.
+   * `reason` is null when it can, otherwise one of the codes documented in
+   * AudioManager.amplificationBlockReason. `initial` marks the top frame's
+   * clean-slate report on document load, which invalidates everything the
+   * previous document (and its iframes) reported.
+   */
+  setFrameAmplification(tabId, frameId, reason, initial = false) {
+    const before = this.getAmplificationLimit(tabId);
+
+    let frames = initial ? null : this.tabAmplification.get(tabId);
+    if (!frames) {
+      frames = new Map();
+      this.tabAmplification.set(tabId, frames);
+    }
+    frames.set(frameId, reason);
+    this._schedulePersistTabs();
+
+    if (this.getAmplificationLimit(tabId) !== before) this.notifyPopupUpdate();
+  }
+
+  /**
+   * Why the tab cannot be amplified (first limiting frame wins), or null.
+   * Unknown tabs count as amplifiable.
+   */
+  getAmplificationLimit(tabId) {
+    const frames = this.tabAmplification.get(tabId);
+    if (!frames) return null;
+    for (const reason of frames.values()) {
+      if (reason) return reason;
+    }
+    return null;
   }
 
   getTabVolume(tabId) {
@@ -266,6 +315,7 @@ class TabManager {
       .filter(tab => this.audioTabs.has(tab.id) || tab.audible || tab.id === activeTabId)
       .map(tab => {
         const hostname = this.tabHostnames.get(tab.id) || (tab.url ? this._hostnameOf(tab.url) : null);
+        const amplificationLimit = this.getAmplificationLimit(tab.id);
         return {
           id: tab.id,
           title: tab.title,
@@ -274,7 +324,9 @@ class TabManager {
           audible: tab.audible || false,
           active: tab.id === activeTabId,
           hostname,
-          remembered: hostname ? hostname in this.sitePrefs : false
+          remembered: hostname ? hostname in this.sitePrefs : false,
+          canAmplify: amplificationLimit === null,
+          amplificationLimit
         };
       });
 
@@ -429,6 +481,7 @@ class TabManager {
     this.tabVolumes.delete(tabId);
     this.tabHostnames.delete(tabId);
     this.preMuteVolumes.delete(tabId);
+    this.tabAmplification.delete(tabId);
 
     if (this.tabRemovalTimeouts.has(tabId)) {
       clearTimeout(this.tabRemovalTimeouts.get(tabId));

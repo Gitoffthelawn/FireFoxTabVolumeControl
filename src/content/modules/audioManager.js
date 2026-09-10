@@ -68,18 +68,29 @@ class AudioManager {
   }
 
   /**
-   * Whether this element must stay on the native HTML5 volume path.
+   * Why this element must stay on the native HTML5 volume path (0-100%, no
+   * amplification), or null when it can be - or already is - routed through
+   * Web Audio. The reason codes are shown to the user by the popup.
    *
-   * Detached elements (never inserted into the DOM, e.g. SoundCloud's
-   * player) are never routed: such sites typically own the element's Web
-   * Audio graph, and taking the element first would break their player.
-   * They get 0-100% but no amplification.
+   *   'rejected'     Web Audio refused the element when we tried.
+   *   'page-audio'   The page routes it through its own Web Audio graph; an
+   *                  element feeds at most one source node and taking it
+   *                  first would break the site's player (SoundCloud).
+   *   'detached'     Never inserted into the DOM. Such sites typically own
+   *                  the element's Web Audio graph, so it is not routed.
+   *   'cross-origin' Served from another origin without CORS.
    */
+  amplificationBlockReason(element) {
+    if (this.routedElements.has(element)) return null;
+    if (this.blockedElements.has(element)) return 'rejected';
+    if (this.pageManagedElements.has(element)) return 'page-audio';
+    if (!element.isConnected) return 'detached';
+    if (this.isCrossOriginElement(element)) return 'cross-origin';
+    return null;
+  }
+
   shouldBlockAmplification(element) {
-    if (this.blockedElements.has(element)) return true;
-    if (this.pageManagedElements.has(element)) return true;
-    if (!element.isConnected) return true;
-    return this.isCrossOriginElement(element);
+    return this.amplificationBlockReason(element) !== null;
   }
 
   /**

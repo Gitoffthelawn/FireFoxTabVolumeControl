@@ -63,6 +63,16 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
+    case 'amplificationStatus':
+      // Pushed by content scripts (one per frame) whenever their answer changes.
+      if (sender.tab?.id !== undefined) {
+        tabManager.setFrameAmplification(
+          sender.tab.id, sender.frameId ?? 0,
+          message.limited ? message.reason : null, !!message.initial
+        );
+      }
+      break;
+
     case 'getTabAudioStatus':
       tabManager.getAudioTabStatus().then(tabs => sendResponse({ tabs }));
       return true;

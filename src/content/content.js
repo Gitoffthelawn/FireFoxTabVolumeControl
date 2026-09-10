@@ -20,6 +20,30 @@ const mediaScanner = new MediaScanner(mediaRegistry);
 // reaches the registry. See pageHooks.js.
 installPageHooks(mediaRegistry, audioManager, volumeController);
 
+// Tell the background whether this frame's media can be amplified, so the
+// popup can cap the slider at 100% and say why. Sent only when the answer
+// changes. The top frame announces a clean slate on load so stale entries
+// from the previous document (including its iframes) are dropped.
+let lastAmplificationKey = null;
+
+function publishAmplificationStatus() {
+  const status = mediaRegistry.getAmplificationStatus();
+  if (!status) return;
+  const key = `${status.limited}:${status.reason}`;
+  if (key === lastAmplificationKey) return;
+  lastAmplificationKey = key;
+  browser.runtime.sendMessage({ action: 'amplificationStatus', ...status }).catch(() => {});
+}
+
+mediaRegistry.onStatusChange = publishAmplificationStatus;
+
+if (window.top === window) {
+  lastAmplificationKey = 'false:null';
+  browser.runtime.sendMessage({
+    action: 'amplificationStatus', initial: true, limited: false, reason: null
+  }).catch(() => {});
+}
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.action) {
     case 'setVolume':

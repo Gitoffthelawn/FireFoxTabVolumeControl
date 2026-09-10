@@ -5,7 +5,7 @@
  * to the background script (which owns all volume state).
  */
 
-import { CONFIG, formatPresetLabel } from './config.js';
+import { CONFIG, AMPLIFICATION_LIMITS, formatPresetLabel } from './config.js';
 import themeManager from './themeManager.js';
 
 const send = (action, extra = {}) => browser.runtime.sendMessage({ action, ...extra });
@@ -48,6 +48,23 @@ function setVolumeDisplay(display, volume, baseClass) {
 
 function findTab(tabId) {
   return tabs.find(tab => tab.id === tabId);
+}
+
+/**
+ * Upper bound of a tab's slider: tabs whose media cannot be routed through
+ * Web Audio stop at 100%.
+ */
+function maxVolumeFor(tab) {
+  return tab.canAmplify === false ? CONFIG.VOLUMES.MAX_NATIVE : CONFIG.VOLUMES.MAX;
+}
+
+/**
+ * The volume the tab actually plays at. A stored value above the tab's
+ * ceiling (e.g. a remembered 500% on a site that cannot be amplified) has
+ * no effect, so the badge shows the ceiling rather than the stored number.
+ */
+function effectiveVolume(tab) {
+  return Math.min(tab.volume, maxVolumeFor(tab));
 }
 
 function showNoAudioMessage() {
@@ -127,15 +144,18 @@ function createTabElement(tab) {
   title.title = tab.title;
 
   const display = tabDiv.querySelector('.tab-volume-display');
-  setVolumeDisplay(display, tab.volume, 'tab-volume-display');
+  setVolumeDisplay(display, effectiveVolume(tab), 'tab-volume-display');
+
+  const maxVolume = maxVolumeFor(tab);
+  const limitText = AMPLIFICATION_LIMITS[tab.amplificationLimit] || AMPLIFICATION_LIMITS['rejected'];
 
   const [minLabel, maxLabel] = tabDiv.querySelectorAll('.volume-label');
   minLabel.textContent = `${CONFIG.VOLUMES.MIN}%`;
-  maxLabel.textContent = `${CONFIG.VOLUMES.MAX}%`;
+  maxLabel.textContent = `${maxVolume}%`;
 
   const slider = tabDiv.querySelector('.volume-slider');
   slider.min = CONFIG.VOLUMES.MIN;
-  slider.max = CONFIG.VOLUMES.MAX;
+  slider.max = maxVolume;
   slider.value = tab.volume;
   slider.dataset.tabId = tab.id;
   slider.addEventListener('input', () => {
@@ -147,11 +167,23 @@ function createTabElement(tab) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn';
     btn.textContent = formatPresetLabel(preset);
+    if (preset > maxVolume) {
+      btn.disabled = true;
+      btn.title = limitText;
+    }
     btn.addEventListener('click', () => {
       slider.value = preset;
       setTabVolume(tab.id, preset, slider, display);
     });
     presetContainer.appendChild(btn);
+  }
+
+  if (tab.canAmplify === false) {
+    const note = document.createElement('div');
+    note.className = 'amplify-note';
+    note.textContent = 'Amplification not available on this site';
+    note.title = limitText;
+    tabDiv.querySelector('.volume-container').appendChild(note);
   }
 
   if (tab.hostname) {
@@ -187,7 +219,7 @@ function updateTabListInPlace() {
 
     slider.value = tab.volume;
     const display = slider.closest('.tab-item').querySelector('.tab-volume-display');
-    setVolumeDisplay(display, tab.volume, 'tab-volume-display');
+    setVolumeDisplay(display, effectiveVolume(tab), 'tab-volume-display');
   });
 }
 
@@ -221,7 +253,8 @@ async function loadAudioTabs({ silent = false } = {}) {
         response.tabs.every((t, i) =>
           t.id === tabs[i].id &&
           t.title === tabs[i].title &&
-          t.remembered === tabs[i].remembered
+          t.remembered === tabs[i].remembered &&
+          t.canAmplify === tabs[i].canAmplify
         );
       tabs = response.tabs;
 

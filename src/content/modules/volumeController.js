@@ -113,5 +113,7 @@ class VolumeController {
     });
 
     this.audioManager.setGainValue(volume);
+    // Routing attempts above may have revealed elements Web Audio rejects.
+    mediaRegistry.announceStatus();
   }
 }

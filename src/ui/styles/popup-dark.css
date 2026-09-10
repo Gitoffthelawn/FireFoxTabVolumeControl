@@ -55,6 +55,11 @@ body.dark-theme .preset-btn:hover {
   color: var(--bg-primary);
 }
 
+body.dark-theme .preset-btn:disabled:hover {
+  background: var(--bg-secondary);
+  color: var(--accent-primary);
+}
+
 body.dark-theme .apply-all-btn {
   background: var(--accent-primary);
   color: var(--bg-primary);

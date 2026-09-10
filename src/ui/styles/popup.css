@@ -176,6 +176,24 @@ body {
   color: white;
 }
 
+.preset-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preset-btn:disabled:hover {
+  background: white;
+  color: var(--accent-primary);
+}
+
+/* Shown on tabs whose media stops at 100% (see AMPLIFICATION_LIMITS). */
+.amplify-note {
+  margin-top: var(--spacing-xs);
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  cursor: help;
+}
+
 /* Action Buttons */
 .apply-all-btn {
   width: 100%;
